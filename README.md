@@ -28,7 +28,7 @@ In this project, we had to develop a cloud based api server for a web based conf
 In this project, we were required to make certain design decisions to implement
 all that was asked.
 
-* Session kind
+#### Session kind
 We were asked to add sessions to the already implemented conferences. As such,
 we implemented not only the Session model, but also the SessionForm and
 SessionForms.
@@ -75,7 +75,7 @@ querySessions
 Also, in connection with task 6 (add a task), the 'speaker' property is
 required for creating a new session and, therefore, may not be left blank.
 
-* Speaker
+#### Speaker
 The Speaker is implemented as a whole entity, which is created at the moment of
 the session creation (but may be updated after this moment). Despite that, the
 Speaker is not attached as a child to the Session that created it (considering
