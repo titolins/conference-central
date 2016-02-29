@@ -60,8 +60,9 @@ API_EXPLORER_CLIENT_ID = endpoints.API_EXPLORER_CLIENT_ID
 MEMCACHE_ANNOUNCEMENTS_KEY = "RECENT_ANNOUNCEMENTS"
 ANNOUNCEMENT_TPL = ('Last chance to attend! The following conferences '
                     'are nearly sold out: %s')
-FEATURED_SPEAKER_TPL = "Featured speaker: %s"
-MEMCACHE_SPEAKER_KEY = "FEATURED_SPEAKER"
+FEATURED_SPEAKER_TPL = ('You should not miss the following sessions by our '
+                    'featured speaker %s: %s')
+#MEMCACHE_SPEAKER_KEY = "FEATURED_SPEAKER"
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 DEFAULTS = {
@@ -137,7 +138,6 @@ SESSION_GET_REQUEST = endpoints.ResourceContainer(
 SESSION_POST_REQUEST = endpoints.ResourceContainer(
     SessionForm,
     websafeConferenceKey=messages.StringField(1),
-    featured=messages.BooleanField(2),
 )
 
 SESSION_POST_UPDATE_REQUEST = endpoints.ResourceContainer(
@@ -186,15 +186,17 @@ class ConferenceApi(remote.Service):
 # attributes other than it's name.
 
 
-    def _createSpeakerObject(self, request, featured=None):
+    def _createSpeakerObject(self, request):
         """method responsible for the actual creation of the speaker object"""
         # First we check to see if the speaker already exists
         sp = Speaker.query(Speaker.name==request['speaker']).get()
         s_key = ndb.Key(urlsafe=request['websafeSessionKey'])
+        conf_key = ndb.Key(urlsafe=request['websafeConferenceKey'])
         if sp:
             # if it does, we simply append the newly created session key to it
             sp.sessions.append(s_key)
             sp.put()
+            self._checkFeatured(sp, conf_key)
             return self._copySpeakerToForm(sp, s_key.get().name)
 
         # otherwise, we create a new speaker entity
@@ -221,11 +223,42 @@ class ConferenceApi(remote.Service):
 
         # save to db and return
         Speaker(**data).put()
-        if featured is not None:
+        sp = sp_key.get()
+        self._checkFeatured(sp, conf_key)
+        return self._copySpeakerToForm(sp, s.name)
+
+
+    def _checkFeatured(self, speaker, conferenceKey):
+        '''
+        Checks if a speaker should be considered featured within a given
+        conference. A speaker will be considered a featured speaker if there is
+        more than one session by such speaker in the conference.
+        '''
+        # initialize the counter
+        count = 0
+        # get the speaker sessions and iterate them
+        sessions = []
+        for session in ndb.get_multi(speaker.sessions):
+            # grabs the session conference and checks if it's the same
+            # conference of the newly created session (if so, increments the
+            # counter).
+            sessionConference = session.key.parent().get()
+            if conferenceKey == sessionConference.key:
+                count += 1
+                sessions.append(session.name)
+        # if the counter is greater than 1 (meaning the speaker has another
+        # session in the conference, besides the newly created session), it is
+        # a featured speaker and shall be added to memcache.
+        if count > 1:
             taskqueue.add(
-                    params={'speaker': data['name'],},
+                    params={
+                        'speaker_name': speaker.name,
+                        'websafeConferenceKey': conferenceKey.urlsafe(),
+                        'sessions': ', '.join(session for session in sessions),
+                    },
                     url='/tasks/set_featured_speaker')
-        return self._copySpeakerToForm(sp_key.get(), s.name)
+        else:
+            return None
 
 
     def _copySpeakerToForm(self, speaker, displayName):
@@ -308,18 +341,18 @@ class ConferenceApi(remote.Service):
 
 
     @staticmethod
-    def _cacheFeaturedSpeaker(speaker_name):
-        featured = FEATURED_SPEAKER_TPL % (speaker_name,)
-        memcache.set(MEMCACHE_SPEAKER_KEY, featured)
+    def _cacheFeaturedSpeaker(speaker_name, websafeConferenceKey, sessions):
+        featured = FEATURED_SPEAKER_TPL % (speaker_name, sessions,)
+        memcache.set(websafeConferenceKey, featured)
 
 
-    @endpoints.method(message_types.VoidMessage, StringMessage,
+    @endpoints.method(CONF_GET_REQUEST, StringMessage,
             path='get_featured_speaker',
             http_method='GET', name='getFeaturedSpeaker')
     def getFeaturedSpeaker(self, request):
         """Return featured speaker from memcache."""
         return StringMessage(
-                data=memcache.get(MEMCACHE_SPEAKER_KEY) or "")
+                data=memcache.get(request.websafeConferenceKey) or "")
 
 
 # - - - Session objects - - - - - - - - - - - - - - - - -
@@ -383,7 +416,6 @@ class ConferenceApi(remote.Service):
         del data['websafeConferenceKey']
         del data['websafeKey']
         del data['conferenceDisplayName']
-        del data['featured']
 
         # sets default options
         for df in SESSION_DEFAULTS:
@@ -430,11 +462,9 @@ class ConferenceApi(remote.Service):
         speakerRequest = {
                 'speaker': request.speaker,
                 'websafeSessionKey': s_key.urlsafe(),
+                'websafeConferenceKey': c_key.urlsafe(),
                 }
-        if request.featured:
-            self._createSpeakerObject(speakerRequest, featured=True)
-        else:
-            self._createSpeakerObject(speakerRequest)
+        self._createSpeakerObject(speakerRequest)
 
         return self._copySessionToForm(request, getattr(conf, 'name'))
 
