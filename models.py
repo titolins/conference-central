@@ -98,8 +98,8 @@ class Session(ndb.Model):
     """Session -- Session object"""
     name            = ndb.StringProperty(required=True)
     highlights      = ndb.StringProperty(repeated=True)
-    speaker         = ndb.StringProperty(required=True)
-    duration        = ndb.IntegerProperty()
+    speakerDisplayName = ndb.StringProperty()
+    duration        = ndb.TimeProperty()
     typeOfSession   = ndb.StringProperty()
     date            = ndb.DateProperty()
     startTime       = ndb.TimeProperty()
@@ -109,8 +109,8 @@ class SessionForm(messages.Message):
     """SessionForm -- Session outbound form message"""
     name            = messages.StringField(1)
     highlights      = messages.StringField(2, repeated=True)
-    speaker         = messages.StringField(3)
-    duration        = messages.IntegerField(4)
+    speaker         = messages.MessageField('SpeakerForm', 3)
+    duration        = messages.StringField(4)
     typeOfSession   = messages.StringField(5)
     date            = messages.StringField(6)
     startTime       = messages.StringField(7)
@@ -122,10 +122,11 @@ class SessionUpdateForm(messages.Message):
     """SessionUpdateForm -- Session inbound form message"""
     name            = messages.StringField(1)
     highlights      = messages.StringField(2, repeated=True)
-    duration        = messages.IntegerField(3)
-    typeOfSession   = messages.StringField(4)
-    date            = messages.StringField(5)
-    startTime       = messages.StringField(6)
+    speaker         = messages.MessageField('SpeakerUpdateForm', 3)
+    duration        = messages.StringField(4)
+    typeOfSession   = messages.StringField(5)
+    date            = messages.StringField(6)
+    startTime       = messages.StringField(7)
 
 class SessionForms(messages.Message):
     """SessionForms -- holder for several session outbound forms"""
@@ -149,7 +150,6 @@ class SpeakerForm(messages.Message):
     languages       = messages.StringField(5, repeated=True)
     sessions        = messages.StringField(6, repeated=True)
     websafeKey      = messages.StringField(7)
-    sessionDisplayName = messages.StringField(8)
 
 class SpeakerUpdateForm(messages.Message):
     """SpeakerForm -- inbound speaker message form"""
