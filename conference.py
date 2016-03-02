@@ -45,7 +45,7 @@ from models import SessionUpdateForm
 from models import SessionForms
 from models import Speaker
 from models import SpeakerForm
-from models import SpeakerUpdateForm
+#from models import SpeakerUpdateForm
 from models import SpeakerForms
 
 from settings import WEB_CLIENT_ID
@@ -62,7 +62,6 @@ ANNOUNCEMENT_TPL = ('Last chance to attend! The following conferences '
                     'are nearly sold out: %s')
 FEATURED_SPEAKER_TPL = ('You should not miss the following sessions by our '
                     'featured speaker %s: %s')
-#MEMCACHE_SPEAKER_KEY = "FEATURED_SPEAKER"
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 DEFAULTS = {
@@ -74,8 +73,6 @@ DEFAULTS = {
 
 SESSION_DEFAULTS = {
     "highlights": [ "Default", "Highlight" ],
-    "speaker": "john doe",
-    "duration": 0,
     "typeOfSession": u'session type',
 }
 
@@ -107,11 +104,12 @@ SESSION_FIELDS = {
         'TYPE': 'typeOfSession',
         'DATE': 'date',
         'START_TIME': 'startTime',
+        'DURATION': 'duration',
         }
 
 CONF_GET_REQUEST = endpoints.ResourceContainer(
     message_types.VoidMessage,
-    websafeConferenceKey=messages.StringField(1),
+    websafeConferenceKey=messages.StringField(1, required=True),
 )
 
 CONF_GET_BY_TYPE_REQUEST = endpoints.ResourceContainer(
@@ -137,7 +135,7 @@ SESSION_GET_REQUEST = endpoints.ResourceContainer(
 
 SESSION_POST_REQUEST = endpoints.ResourceContainer(
     SessionForm,
-    websafeConferenceKey=messages.StringField(1),
+    websafeConferenceKey=messages.StringField(3)
 )
 
 SESSION_POST_UPDATE_REQUEST = endpoints.ResourceContainer(
@@ -147,19 +145,15 @@ SESSION_POST_UPDATE_REQUEST = endpoints.ResourceContainer(
 
 SPEAKER_GET_REQUEST = endpoints.ResourceContainer(
     message_types.VoidMessage,
-    speaker=messages.StringField(1, required=True),
+    websafeSpeakerKey=messages.StringField(1, required=True),
 )
-'''
-SPEAKER_POST_REQUEST = endpoints.ResourceContainer(
-    SpeakerForm,
-    websafeSessionKey=messages.StringField(1),
-)
-'''
 
+'''
 SPEAKER_POST_UPDATE_REQUEST = endpoints.ResourceContainer(
     SpeakerUpdateForm,
     websafeSpeakerKey=messages.StringField(1),
 )
+'''
 
 ADD_SESSION_POST_REQUEST = endpoints.ResourceContainer(
         websafeSessionKey=messages.StringField(1, required=True),
@@ -185,80 +179,58 @@ class ConferenceApi(remote.Service):
 # They may be updated, however, in order for the authorized user to insert
 # attributes other than it's name.
 
+    def _checkFeaturedSpeaker(self, websafeSpeakerKey, websafeConferenceKey):
+        """
+        Method used to create the task which will be used to check if the
+        newly created or updated speaker is to be considered a featured speaker
+        """
+        taskqueue.add(
+                params={
+                    'websafeSpeakerKey': websafeSpeakerKey,
+                    'websafeConferenceKey': websafeConferenceKey,
+                },
+                url='/tasks/set_featured_speaker')
 
-    def _createSpeakerObject(self, request):
+
+    def _createSpeakerObject(self, request, session_key):
         """method responsible for the actual creation of the speaker object"""
         # First we check to see if the speaker already exists
-        sp = Speaker.query(Speaker.name==request['speaker']).get()
-        s_key = ndb.Key(urlsafe=request['websafeSessionKey'])
-        conf_key = ndb.Key(urlsafe=request['websafeConferenceKey'])
+        sp = Speaker.query(Speaker.name==getattr(request, 'name')).get()
+        conf_key = session_key.parent()
         if sp:
             # if it does, we simply append the newly created session key to it
-            sp.sessions.append(s_key)
+            sp.sessions.append(session_key)
             sp.put()
-            self._checkFeatured(sp, conf_key)
-            return self._copySpeakerToForm(sp, s_key.get().name)
+            # if speaker exists, we check if it's a featured speaker
+            self._checkFeaturedSpeaker(sp.key.urlsafe(), conf_key.urlsafe())
+            return self._copySpeakerToForm(sp, session_key.get().name)
 
         # otherwise, we create a new speaker entity
-        s = s_key.get()
-        data = {
-                'name': request['speaker'],
-                'sessions': [s_key,],
-                }
+        s = session_key.get()
+        data = { field.name: getattr(request, field.name)\
+                for field in request.all_fields() }
+        del data['websafeKey']
+        # in case the speaker does not exist, it's only session is the newly
+        # created
+        data['sessions'] = [session_key,]
 
         # sets the default options
         for df in SPEAKER_DEFAULTS:
             data[df] = SPEAKER_DEFAULTS[df]
-            request[df] = SPEAKER_DEFAULTS[df]
 
         # generate the speaker id based on the session key
-        sp_id = Session.allocate_ids(size=1)[0]
+        sp_id = Speaker.allocate_ids(size=1)[0]
 
         # create speaker key
         sp_key = ndb.Key(Speaker, sp_id)
         data['key'] = sp_key
 
-        # add session id to object data and form
-        #data['sessionId'] = request['sessionId'] = s.key.id()
-
         # save to db and return
         Speaker(**data).put()
         sp = sp_key.get()
-        self._checkFeatured(sp, conf_key)
+        # if speaker does not already exist, we do not need to worry about it
+        # being featured.
         return self._copySpeakerToForm(sp, s.name)
-
-
-    def _checkFeatured(self, speaker, conferenceKey):
-        '''
-        Checks if a speaker should be considered featured within a given
-        conference. A speaker will be considered a featured speaker if there is
-        more than one session by such speaker in the conference.
-        '''
-        # initialize the counter
-        count = 0
-        # get the speaker sessions and iterate them
-        sessions = []
-        for session in ndb.get_multi(speaker.sessions):
-            # grabs the session conference and checks if it's the same
-            # conference of the newly created session (if so, increments the
-            # counter).
-            sessionConference = session.key.parent().get()
-            if conferenceKey == sessionConference.key:
-                count += 1
-                sessions.append(session.name)
-        # if the counter is greater than 1 (meaning the speaker has another
-        # session in the conference, besides the newly created session), it is
-        # a featured speaker and shall be added to memcache.
-        if count > 1:
-            taskqueue.add(
-                    params={
-                        'speaker_name': speaker.name,
-                        'websafeConferenceKey': conferenceKey.urlsafe(),
-                        'sessions': ', '.join(session for session in sessions),
-                    },
-                    url='/tasks/set_featured_speaker')
-        else:
-            return None
 
 
     def _copySpeakerToForm(self, speaker, displayName):
@@ -267,15 +239,14 @@ class ConferenceApi(remote.Service):
         for field in spForm.all_fields():
             if field.name == "sessions":
                 sessions = []
-                for session in getattr(speaker, "sessions"):
+                for session in getattr(speaker, field.name):
                     sessions.append(session.urlsafe())
                 setattr(spForm, field.name, sessions)
             elif hasattr(speaker, field.name):
                 setattr(spForm, field.name, getattr(speaker, field.name))
             elif field.name == "websafeKey":
                 setattr(spForm, field.name, speaker.key.urlsafe())
-        if displayName:
-            setattr(spForm, 'sessionDisplayName', displayName)
+
         spForm.check_initialized()
         return spForm
 
@@ -285,65 +256,85 @@ class ConferenceApi(remote.Service):
             http_method='GET', name='getSessionSpeaker')
     def getSessionSpeaker(self, request):
         """Get speaker associated with a given session"""
-        s_key = ndb.Key(urlsafe=request.websafeSessionKey)
-        s = s_key.get()
+        s = ndb.Key(urlsafe=request.websafeSessionKey).get()
         if not s:
             raise endpoints.NotFoundException(
                 'No session found with key: %s'
                  % request.websafeSessionKey)
-        speaker = Speaker.query(Speaker.name==s.speaker).get()
+        if not s.speakerDisplayName:
+            raise endpoints.NotFoundException(
+                'No speaker registered for session with key: %s'
+                 % request.websafeSessionKey)
+
+        speaker = Speaker.query(Speaker.name==s.speakerDisplayName).get()
         return self._copySpeakerToForm(speaker, s.name)
 
 
-    @endpoints.method(SPEAKER_POST_UPDATE_REQUEST, SpeakerForm,
-        path='speaker/{websafeSpeakerKey}',
-        http_method='PUT', name='updateSpeaker')
-    def updateSpeaker(self, request):
-        """Update speaker w/provided fields & return w/updated info."""
-        return self._updateSpeakerObject(request)
-
-
-    @ndb.transactional()
-    def _updateSpeakerObject(self, request):
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
-        user_id = getUserId(user)
-
-        # copy Speaker/ProtoRPC Message into dict
-        data = {field.name: getattr(request, field.name)\
-                for field in request.all_fields()}
-
-        # update existing speaker
-        speaker = ndb.Key(urlsafe=request.websafeSpeakerKey).get()
-        # check that conference exists
-        if not speaker:
-            raise endpoints.NotFoundException(
-                'No speaker found with key: %s' % request.websafeSpeakerKey)
-        session = speaker.key.parent().get()
-        conf = session.key.parent().get()
-
-        # check that user is owner
-        if user_id != conf.organizerUserId:
-            raise endpoints.ForbiddenException(
-                'Only the owner can update the speaker of the session.')
-
-        # Not getting all the fields, so don't create a new object; just
-        # copy relevant fields from SpeakerUpdateForm to Speaker object
-        for field in request.all_fields():
-            data = getattr(request, field.name)
-            # only copy fields where we get data
-            if data not in (None, []):
-                # write to speaker object
-                setattr(speaker, field.name, data)
-        speaker.put()
-        return self._copySpeakerToForm(speaker, getattr(session, 'name'))
+    def _updateSpeakerObject(self, request, websafeConferenceKey,
+            former_speaker_name, session_key):
+        '''
+        Update method for speaker entities.
+        '''
+        # first, if the name of the speaker is to be updated, we check to see
+        # if there is already a speaker with same name. If so, we use it. Else,
+        # we use the former speaker entity
+        speaker = None
+        if request.name:
+            speaker = Speaker.query(Speaker.name==request.name).get()
+        else:
+            speaker = Speaker.query(Speaker.name==former_speaker_name).get()
+        # if speaker exists, we update it with the request parameters
+        if speaker is not None:
+            for field in request.all_fields():
+                data = getattr(request, field.name)
+                if data not in (None, []):
+                    setattr(speaker, field.name, data)
+            if session_key not in speaker.sessions:
+                speaker.sessions.append(session_key)
+            # save updated speaker to db and check if featured it is a
+            # featured speaker
+            speaker.put()
+            self._checkFeaturedSpeaker(
+                    speaker.key.urlsafe(), websafeConferenceKey)
+            # return form
+            return self._copySpeakerToForm(speaker, "")
+        # else, meaning there was no speaker with the name provided in the
+        # updated form, nor former speaker registered with the session.
+        # generate the dict with all data in the request.
+        data = { field.name: getattr(request, field.name)\
+                for field in request.all_fields() }
+        data['sessions'] = [session_key,]
+        sp_id = Speaker.allocate_ids(size=1)[0]
+        sp_key = ndb.Key(Speaker, sp_id)
+        data['key'] = sp_key
+        # save to db and return form
+        Speaker(**data).put()
+        return self._copySpeakerToForm(sp_key.get(), "")
 
 
     @staticmethod
-    def _cacheFeaturedSpeaker(speaker_name, websafeConferenceKey, sessions):
-        featured = FEATURED_SPEAKER_TPL % (speaker_name, sessions,)
-        memcache.set(websafeConferenceKey, featured)
+    def _cacheFeaturedSpeaker(websafeSpeakerKey, websafeConferenceKey):
+        # Get the speaker by its websafeKey
+        speaker = ndb.Key(urlsafe=websafeSpeakerKey).get()
+        # initialize the counter and the list which will hold the name of the
+        # sessions of this conference given by the speaker
+        count = 0
+        session_list = []
+        # iterate all speaker sessions
+        for session in speaker.sessions:
+            # grabs the session conference and checks if it's the same
+            # conference of the newly created session (if so, increments the
+            # counter and appends the session name to the list of sessions).
+            if session.parent().urlsafe() == websafeConferenceKey:
+                count += 1
+                session_list.append(session)
+        # if the counter is greater than 1 (meaning the speaker has another
+        # session in the conference, besides the newly created session), it is
+        # a featured speaker and shall be added to memcache.
+        if count > 1:
+            sessions = [session.get().name for session in session_list]
+            featured = FEATURED_SPEAKER_TPL % (speaker.name, sessions,)
+            memcache.set(websafeConferenceKey, featured)
 
 
     @endpoints.method(CONF_GET_REQUEST, StringMessage,
@@ -358,13 +349,13 @@ class ConferenceApi(remote.Service):
 # - - - Session objects - - - - - - - - - - - - - - - - -
 
 
-    def _copySessionToForm(self, session, displayName):
+    def _copySessionToForm(self, session, displayName, speaker_form=None):
         """Copy session fields to SessionForm."""
         sessionForm = SessionForm()
         for field in sessionForm.all_fields():
             if hasattr(session, field.name):
                 # converts time and date objects to string
-                if field.name in ["date", "startTime"]:
+                if field.name in ["date", "startTime", "duration"]:
                     setattr(
                             sessionForm,
                             field.name,
@@ -376,6 +367,9 @@ class ConferenceApi(remote.Service):
                             getattr(session, field.name))
             elif field.name == "websafeKey":
                 setattr(sessionForm, field.name, session.key.urlsafe())
+            elif field.name == 'speaker':
+                if speaker_form:
+                    setattr(sessionForm, field.name, speaker_form)
         if displayName:
             setattr(sessionForm, 'conferenceDisplayName', displayName)
         sessionForm.check_initialized()
@@ -396,7 +390,8 @@ class ConferenceApi(remote.Service):
         if not user:
             raise endpoints.UnauthorizedException('Authorization required')
         user_id = getUserId(user)
-        conf = ndb.Key(urlsafe=request.websafeConferenceKey).get()
+        c_key = ndb.Key(urlsafe=request.websafeConferenceKey)
+        conf = c_key.get()
         # first see if we have a conference with the given key
         if not conf:
             raise endpoints.NotFoundException(
@@ -424,28 +419,24 @@ class ConferenceApi(remote.Service):
                 setattr(request, df, SESSION_DEFAULTS[df])
 
         # converting date and time objects
-        try:
+        if data['date']:
             # we are considering the same format received when of the creation
             # of a new conference
             # e.g.: '2016-02-11T02:00:00.000Z'
             data['date'] = datetime.strptime(
                     data['date'][:10], "%Y-%m-%d").date()
-        except (ValueError, TypeError) as e:
-            # If no date supplied we just initialize an empty time
-            data['date'] = getattr(conf, 'startDate')
-            pass
-        try:
+        if data['startTime']:
             # we are considering a regular time format here
-            # e.g.: '02:00:00'
+            # e.g.: '02:00'
+            # CHANGED -> removed seconds, as it really didn't made much sense
             data['startTime'] = datetime.strptime(
-                    data['startTime'], "%H:%M:%S").time()
-        except (ValueError, TypeError) as e:
-            # If no time supplied we just initialize an empty time
-            data['startTime'] = time()
-            pass
-
+                    data['startTime'], "%H:%M").time()
+        if data['duration']:
+            # Considering same time format as we did for startTime above
+            # e.g.: '02:00'
+            data['duration'] = datetime.strptime(
+                    data['duration'], "%H:%M").time()
         # generate the session key based on the conference key
-        c_key = ndb.Key(urlsafe=request.websafeConferenceKey)
         s_id = Session.allocate_ids(
                 size=1,
                 parent=c_key)[0]
@@ -453,20 +444,28 @@ class ConferenceApi(remote.Service):
         # create session key
         s_key = ndb.Key(Session, s_id, parent=c_key)
         data['key'] = s_key
-
         data['conferenceId'] = request.conferenceId = c_key.id()
 
-        # save to db and return
-        Session(**data).put()
-        # create speaker entity
-        speakerRequest = {
-                'speaker': request.speaker,
-                'websafeSessionKey': s_key.urlsafe(),
-                'websafeConferenceKey': c_key.urlsafe(),
-                }
-        self._createSpeakerObject(speakerRequest)
+        # get the speaker form, delete it from the data (as it is not used by
+        # the session model) and sets the speaker display name.
+        speaker_form = None
+        if data['speaker']:
+            speaker_form = data['speaker']
+            data['speakerDisplayName'] = getattr(speaker_form, 'name')
+        del data['speaker']
 
-        return self._copySessionToForm(request, getattr(conf, 'name'))
+        # save to db
+        Session(**data).put()
+
+        # handle speaker creation. session form contains a speaker form, which,
+        # if not none, we pass to the speaker creation method. we call it after
+        # the session creation as we also need the session key.
+        if speaker_form:
+            speaker_form = self._createSpeakerObject(speaker_form, s_key)
+
+        # return form
+        return self._copySessionToForm(s_key.get(), getattr(conf, 'name'),
+                speaker_form)
 
 
     @endpoints.method(SESSION_POST_UPDATE_REQUEST, SessionForm,
@@ -477,7 +476,6 @@ class ConferenceApi(remote.Service):
         return self._updateSessionObject(request)
 
 
-    @ndb.transactional()
     def _updateSessionObject(self, request):
         user = endpoints.get_current_user()
         if not user:
@@ -488,9 +486,8 @@ class ConferenceApi(remote.Service):
         data = {field.name: getattr(request, field.name)\
                 for field in request.all_fields()}
 
-        # update existing session
+        # try to get the session to check that it exists
         session = ndb.Key(urlsafe=request.websafeSessionKey).get()
-        # check that conference exists
         if not session:
             raise endpoints.NotFoundException(
                 'No session found with key: %s' % request.websafeSessionKey)
@@ -503,6 +500,7 @@ class ConferenceApi(remote.Service):
 
         # Not getting all the fields, so don't create a new object; just
         # copy relevant fields from SessionUpdateForm to Session object
+        speaker_form = None
         for field in request.all_fields():
             #field_data = getattr(request, field.name)
             data = getattr(request, field.name)
@@ -514,14 +512,38 @@ class ConferenceApi(remote.Service):
                     # creation of a new conference
                     # e.g.: '2016-02-11T02:00:00.000Z'
                     data = datetime.strptime(data[:10], "%Y-%m-%d").date()
+                    setattr(session, field.name, data)
                 elif field.name == 'startTime':
                     # we are considering a regular time format here
-                    # e.g.: '02:00:00'
-                    data = datetime.strptime(data, "%H:%M:%S").time()
-                # write to session object
-                setattr(session, field.name, data)
+                    # e.g.: '02:00'
+                    data = datetime.strptime(data, "%H:%M").time()
+                    setattr(session, field.name, data)
+                # If we have an SpeakerUpdateForm, the first thing we do is get
+                # the current speaker for the session. The reasoning behind
+                # this regards the fact that a speaker is not a child to a
+                # specific session, being potentially shared by many of those.
+                # In such cases, we should not alter the speaker of all
+                # sessions, as the parameter we use for querying it is the name
+                # (and there may be more than one speaker with the same name),
+                # so we copy all properties of the old speaker which were not
+                # requested to be altered and create a new entity with these
+                # properties and the new ones.
+                elif field.name == 'speaker':
+                    former_speaker = getattr(session, 'speakerDisplayName')
+                    speaker_form = data
+                    data = getattr(data, 'name')
+                    # check again, as we changed data..
+                    if data is not None:
+                        setattr(session, 'speakerDisplayName', data)
         session.put()
-        return self._copySessionToForm(session, getattr(conf, 'name'))
+        spForm = None
+        if speaker_form:
+            spForm = self._updateSpeakerObject(
+                    speaker_form,
+                    conf.key.urlsafe(),
+                    former_speaker,
+                    session.key)
+        return self._copySessionToForm(session, getattr(conf, 'name'), spForm)
 
 
     @endpoints.method(CONF_GET_REQUEST, SessionForms,
@@ -567,27 +589,26 @@ class ConferenceApi(remote.Service):
 
 
     @endpoints.method(SPEAKER_GET_REQUEST, SessionForms,
-            path='sessions/byspeaker', http_method='GET',
+            path='sessions/{websafeSpeakerKey}', http_method='GET',
             name='getSessionsBySpeaker')
     def getSessionsBySpeaker(self, request):
         """
         Get sessions given by the speaker specified across all conferences
         """
         # Get speaker by name
-        speaker = Speaker.query(Speaker.name==request.speaker).get()
-        sessions = []
-        # Try to get the speaker sessions. If we have an AttributeError, it's
-        # because no speaker was found.
-        try:
-            sessions = ndb.get_multi(speaker.sessions)
-        except AttributeError:
-            # No speaker found
-            pass
+        speaker = ndb.Key(urlsafe=request.websafeSpeakerKey).get()
+        if not speaker:
+            raise endpoints.NotFoundException(
+                'No speaker found with key: %s'
+                 % request.websafeSpeakerKey)
+        sessions = ndb.get_multi(speaker.sessions)
+        spForm = self._copySpeakerToForm(speaker, "")
         return SessionForms(
                 items=[
                     self._copySessionToForm(
                         session,
-                        session.key.parent().get().name
+                        session.key.parent().get().name,
+                        spForm
                     )\
                     for session in sessions]
                 )
@@ -609,18 +630,24 @@ class ConferenceApi(remote.Service):
             if f['field'] == 'date':
                 f['value'] = datetime.strptime(f['value'][:10], "%Y-%m-%d").\
                         date()
-            elif f['field'] == 'startTime':
-                f['value'] = datetime.strptime(f['value'], "%H:%M:%S").time()
+            elif f['field'] in ('startTime', 'duration'):
+                f['value'] = datetime.strptime(f['value'], "%H:%M").time()
             query = ndb.query.FilterNode(f['field'], f['operator'], f['value'])
             q = q.filter(query)
 
-        # if there is at least one inequality filter, we filter it using ndb
-        # and remove it from the list (it should be more efficient than using
-        # the _doInequalityFilter method)
-        # REMOVED because filtering by datetime.time() and datetime.date()
-        # apparently is not supported (BadValueError). For now, we just apply
-        # all inequality filters with self._doInequalityFilter method.
-        # It shouldn't be as efficient, but at least it works..
+        # The objective below was to apply at least one inequality filter using
+        # a ndb filter node, removing it from the inequality filters list
+        # (which will be applied in memory afterward). The reasoning behind
+        # this is that ndb filter nodes are probably more efficient than
+        # recreating the lists over and over. However, the idea was abandonned
+        # because filtering by datetime.time() and datetime.date() apparently
+        # is not supported (BadValueError). For now, we just apply all
+        # inequality filters with self._doInequalityFilter method. It shouldn't
+        # be as efficient, but at least it works..
+        # Also, this can be further improved, as the datastore limitation 
+        # relates to inequality filters on different properties. The method
+        # used before herein simply checked for multiple inequality filters,
+        # with disregard of the property it is applied to.
         '''
         if len(inequality_filters) > 0:
             f = inequality_filters.pop()
@@ -634,12 +661,9 @@ class ConferenceApi(remote.Service):
         '''
         # creates a python list with all elements not filtered as of yet
         s_list = [o for o in q]
-        # In case there are more inequality filters, we filter them in memory.
-        # This can be further improved, as the datastore limitation relates to
-        # inequality filters on different properties. We are only checking for
-        # multiple inequality filters, with disregard of the property it is
-        # applied to.
         for in_filter in inequality_filters:
+            # recreated that list over and over, until there are no more
+            # inequality filters
             s_list = self._doInequalityFilter(in_filter, s_list)
 
         # return a form with all sessions remaining after all filters have
@@ -675,38 +699,71 @@ class ConferenceApi(remote.Service):
 
     def _doInequalityFilter(self, f, query):
         """
-        Applies inequality filters on memory objects received from a query,
-        to bypass DataStore limitations
+        Applies inequality filters on memory objects received from a query.
+        Ignores objects which the value of the field to be filtered on is None.
         """
-        op = f['operator']
         if f['field'] == 'date':
             f['value'] = datetime.strptime(f['value'][:10], "%Y-%m-%d").\
                 date()
-        elif f['field'] == 'startTime':
-            f['value'] = datetime.strptime(f['value'], "%H:%M:%S").time()
+        elif f['field'] in ('startTime', 'duration'):
+            f['value'] = datetime.strptime(f['value'], "%H:%M").time()
 
+        op = f['operator']
+        ref_value = f['value']
+        ftr_lst = []
+        for obj in query:
+            obj_value = getattr(obj, f['field'])
+            if obj_value:
+                if op == '!=' and obj_value != ref_value:
+                    ftr_lst.append(obj)
+                elif op == '>' and obj_value > ref_value:
+                    ftr_lst.append(obj)
+                elif op == '>=' and obj_value >= ref_value:
+                    ftr_lst.append(obj)
+                elif op == '<' and obj_value < ref_value:
+                    ftr_lst.append(obj)
+                elif op == '<=' and obj_value <= ref_value:
+                    ftr_lst.append(obj)
+        return ftr_lst
+        '''
         if op == '!=':
             return [obj for obj in query \
-                    if getattr(obj, f['field']) != f['value']]
+                    if \
+                    getattr(obj, f['field']) != f['value'] \
+                    and \
+                    getattr(obj, f['field']) is not None]
         elif op == '>':
             return [obj for obj in query \
-                    if getattr(obj, f['field']) > f['value']]
+                    if \
+                    getattr(obj, f['field']) > f['value'] \
+                    and \
+                    getattr(obj, f['field']) is not None]
         elif op == '>=':
             return [obj for obj in query \
-                    if getattr(obj, f['field']) >= f['value']]
+                    if \
+                    getattr(obj, f['field']) >= f['value'] \
+                    and \
+                    getattr(obj, f['field']) is not None]
         elif op == '<':
             return [obj for obj in query \
-                    if getattr(obj, f['field']) < f['value']]
+                    if \
+                    getattr(obj, f['field']) < f['value'] \
+                    and \
+                    getattr(obj, f['field']) is not None]
         elif op == '<=':
             return [obj for obj in query \
-                    if getattr(obj, f['field']) <= f['value']]
+                    if \
+                    getattr(obj, f['field']) <= f['value'] \
+                    and \
+                    getattr(obj, f['field']) is not None]
+        '''
 
 
 # - - - Session wishlist - - - - - - - - - - - - - - - - - -
 
     @endpoints.method(ADD_SESSION_POST_REQUEST, SessionForms,
             path='profile/sessions/delete',
-            http_method='PUT', name='deleteSessionInWishlist')
+            http_method='DELETE', name='deleteSessionInWishlist')
     def deleteSessionInWishlist(self, request):
         """Deletes session from authorized user wishlist"""
         prof = self._getProfileFromUser() # get user Profile
@@ -850,9 +907,9 @@ class ConferenceApi(remote.Service):
         )
         prof = p_key.get()
         try:
-            return self._copyConferenceToForm(request, getattr(prof, 'displayName'))
+            return self._copyConferenceToForm(c_key.get(), getattr(prof, 'displayName'))
         except AttributeError:
-            return self._copyConferenceToForm(request, '')
+            return self._copyConferenceToForm(c_key.get(), '')
 
 
     @ndb.transactional()
@@ -926,9 +983,9 @@ class ConferenceApi(remote.Service):
         prof = conf.key.parent().get()
         # return ConferenceForm
         try:
-            return self._copyConferenceToForm(request, getattr(prof, 'displayName'))
+            return self._copyConferenceToForm(conf, getattr(prof, 'displayName'))
         except AttributeError:
-            return self._copyConferenceToForm(request, '')
+            return self._copyConferenceToForm(conf, '')
 
 
     @endpoints.method(message_types.VoidMessage, ConferenceForms,
