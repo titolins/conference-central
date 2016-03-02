@@ -386,9 +386,7 @@ class ConferenceApi(remote.Service):
 
     def _createSessionObject(self, request):
         """Creates a new session object"""
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getProfileFromUser()
         user_id = getUserId(user)
         c_key = ndb.Key(urlsafe=request.websafeConferenceKey)
         conf = c_key.get()
@@ -477,9 +475,7 @@ class ConferenceApi(remote.Service):
 
 
     def _updateSessionObject(self, request):
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getProfileFromUser()
         user_id = getUserId(user)
 
         # copy SessionForm/ProtoRPC Message into dict
@@ -853,9 +849,7 @@ class ConferenceApi(remote.Service):
     def _createConferenceObject(self, request):
         """Create Conference object"""
         # preload necessary data items
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getProfileFromUser()
         user_id = getUserId(user)
 
         if not request.name:
@@ -914,9 +908,7 @@ class ConferenceApi(remote.Service):
 
     @ndb.transactional()
     def _updateConferenceObject(self, request):
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = self._getProfileFromUser()
         user_id = getUserId(user)
 
         # copy ConferenceForm/ProtoRPC Message into dict
@@ -994,9 +986,7 @@ class ConferenceApi(remote.Service):
     def getConferencesCreated(self, request):
         """Return conferences created by user."""
         # make sure user is authed
-        user = endpoints.get_current_user()
-        if not user:
-            raise endpoints.UnauthorizedException('Authorization required')
+        user = _self.getProfileFromUser()
         user_id = getUserId(user)
 
         # create ancestor query for all key matches for this user
