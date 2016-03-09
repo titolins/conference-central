@@ -41,9 +41,10 @@ class Session(ndb.Model):
     # we chose to use the speaker name, considering that we have implemented a
     # speaker kind. The property name is speakerDisplayName as to clear things.
     speakerDisplayName = ndb.StringProperty()
-    # we have implemented duration as a timeproperty, representing a
-    # datetime.time() python object
-    duration        = ndb.TimeProperty()
+    # we have implemented duration as an integer representing the duration of
+    # the session in minutes (changed back to integer because of previous
+    # comment regarding possible 24hrs sessions).
+    duration        = ndb.IntegerProperty()
     # type of the session (such as workshop, for example)
     typeOfSession   = ndb.StringProperty()
     # datetime.date() object representing the date of the session.
@@ -63,12 +64,12 @@ class SessionForm(messages.Message):
     # downside of this approach is having to parse yet another field of the
     # session form and creating the speaker by hand.
     speaker         = messages.MessageField('SpeakerForm', 3)
-    # in the form class, we chose to receive the date and time fields (which
-    # are: duration, date and startTime) as string and parse them into python 
-    # date and time objects, respectivelly.
-    duration        = messages.StringField(4)
+    duration        = messages.IntegerField(4)
     # type of the session (e.g. 'workshop')
     typeOfSession   = messages.StringField(5)
+    # in the form class, we chose to receive the date and time fields (which
+    # are: date and startTime) as string and parse them into python 
+    # date and time objects, respectivelly.
     date            = messages.StringField(6)
     startTime       = messages.StringField(7)
     # urlsafe of the entity key and the id and name of the conference the
@@ -85,7 +86,7 @@ class SessionUpdateForm(messages.Message):
     name            = messages.StringField(1)
     highlights      = messages.StringField(2, repeated=True)
     speaker         = messages.MessageField('SpeakerUpdateForm', 3)
-    duration        = messages.StringField(4)
+    duration        = messages.IntegerField(4)
     typeOfSession   = messages.StringField(5)
     date            = messages.StringField(6)
     startTime       = messages.StringField(7)
@@ -102,10 +103,10 @@ getSessionsBySpeaker
     Given a speaker urlsafe key, returns all sessions given by the specified
     speaker.
 createSession
-    We had to make certain assumptions here regarding the date, startTime and
-    duration properties. For the first one (date), we assumed we would receive
-    the date in the same format provided by the existing frontend when creating
-    a new conference (e.g.: '2016-02-11T02:00:00.000Z'). For the time fields,
+    We had to make certain assumptions here regarding the date and startTime
+    properties. For the first one (date), we assumed we would receive the date
+    in the same format provided by the existing frontend when creating a new
+    conference (e.g.: '2016-02-11T02:00:00.000Z'). Regarding the startTime,
     however, we simplified things a little bit by assuming the time format
     would only include hour and minutes (e.g.: '15:00') - please note that we
     chose 24hr format for hours.

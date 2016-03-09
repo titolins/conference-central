@@ -148,13 +148,6 @@ SPEAKER_GET_REQUEST = endpoints.ResourceContainer(
     websafeSpeakerKey=messages.StringField(1, required=True),
 )
 
-'''
-SPEAKER_POST_UPDATE_REQUEST = endpoints.ResourceContainer(
-    SpeakerUpdateForm,
-    websafeSpeakerKey=messages.StringField(1),
-)
-'''
-
 ADD_SESSION_POST_REQUEST = endpoints.ResourceContainer(
         websafeSessionKey=messages.StringField(1, required=True),
 )
@@ -355,7 +348,7 @@ class ConferenceApi(remote.Service):
         for field in sessionForm.all_fields():
             if hasattr(session, field.name):
                 # converts time and date objects to string
-                if field.name in ["date", "startTime", "duration"]:
+                if field.name in ["date", "startTime"]:
                     setattr(
                             sessionForm,
                             field.name,
@@ -429,11 +422,16 @@ class ConferenceApi(remote.Service):
             # CHANGED -> removed seconds, as it really didn't made much sense
             data['startTime'] = datetime.strptime(
                     data['startTime'], "%H:%M").time()
+        # chose to change it back to integers.. previous comment regarding
+        # possible 24hr sessions made sense.. an integer representing minutes
+        # has no such limitation.
+        '''
         if data['duration']:
             # Considering same time format as we did for startTime above
             # e.g.: '02:00'
             data['duration'] = datetime.strptime(
                     data['duration'], "%H:%M").time()
+        '''
         # generate the session key based on the conference key
         s_id = Session.allocate_ids(
                 size=1,
@@ -626,7 +624,7 @@ class ConferenceApi(remote.Service):
             if f['field'] == 'date':
                 f['value'] = datetime.strptime(f['value'][:10], "%Y-%m-%d").\
                         date()
-            elif f['field'] in ('startTime', 'duration'):
+            elif f['field'] == 'startTime':
                 f['value'] = datetime.strptime(f['value'], "%H:%M").time()
             query = ndb.query.FilterNode(f['field'], f['operator'], f['value'])
             q = q.filter(query)
@@ -701,7 +699,7 @@ class ConferenceApi(remote.Service):
         if f['field'] == 'date':
             f['value'] = datetime.strptime(f['value'][:10], "%Y-%m-%d").\
                 date()
-        elif f['field'] in ('startTime', 'duration'):
+        elif f['field'] == 'startTime':
             f['value'] = datetime.strptime(f['value'], "%H:%M").time()
 
         op = f['operator']
@@ -721,38 +719,6 @@ class ConferenceApi(remote.Service):
                 elif op == '<=' and obj_value <= ref_value:
                     ftr_lst.append(obj)
         return ftr_lst
-        '''
-        if op == '!=':
-            return [obj for obj in query \
-                    if \
-                    getattr(obj, f['field']) != f['value'] \
-                    and \
-                    getattr(obj, f['field']) is not None]
-        elif op == '>':
-            return [obj for obj in query \
-                    if \
-                    getattr(obj, f['field']) > f['value'] \
-                    and \
-                    getattr(obj, f['field']) is not None]
-        elif op == '>=':
-            return [obj for obj in query \
-                    if \
-                    getattr(obj, f['field']) >= f['value'] \
-                    and \
-                    getattr(obj, f['field']) is not None]
-        elif op == '<':
-            return [obj for obj in query \
-                    if \
-                    getattr(obj, f['field']) < f['value'] \
-                    and \
-                    getattr(obj, f['field']) is not None]
-        elif op == '<=':
-            return [obj for obj in query \
-                    if \
-                    getattr(obj, f['field']) <= f['value'] \
-                    and \
-                    getattr(obj, f['field']) is not None]
-        '''
 
 
 # - - - Session wishlist - - - - - - - - - - - - - - - - - -
