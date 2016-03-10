@@ -131,13 +131,21 @@ updateSession
     the websafeKey). This endpoint may also be used to update the speaker
     entity.
 querySessions
-    Made in connection with task 5. This method uses the formatAllFilters
-    (based on the formatFilters method used in connection with the
-    queryConference method provided) and the _doInequalityFilter to apply as
-    many inequality filters as required by the user. We chose to filter the
-    query objects in memory to surpass DataStore's limitation of inequality
-    filtering on one property only. Example for filtering sessions that are not
-    workshop sessions and with a startTime greater than 7pm below:
+    Made in connection with task 3. In order to allow for scalability,
+    DataStore was designed in a way that it's performance should only depend on
+    the size of the result set and not on the size of all data stored in it. As
+    such, DataStore will always use indexes to find matching data. This
+    approach imposes a couple of constraints, which are: (i) an inequality
+    filter may only be applied to one property; and (ii) a property with an
+    inequality filter must be sorted first.
+    Thus, this method has been created to allow inequality filtering on many
+    properties, besides not requiring any sorting to be applied on the query.
+    This method uses the formatAllFilters (based on the formatFilters method
+    used in connection with the queryConference method provided) and the
+    _doInequalityFilter to format and apply, respectively, the requested
+    filters. The filters must have the format described below. Example for
+    filtering sessions that are not workshop sessions and with a startTime
+    greater than 7pm below:
         {
             "filters":
             [
@@ -146,7 +154,7 @@ querySessions
                     "operator": "NE",
                     "value": "workshop"
                 },
-                { // second filter
+                {
                     "field": "START_TIME",
                     "operator": "LE",
                     "value": "19:00"
