@@ -307,6 +307,17 @@ class ConferenceApi(remote.Service):
 
     @staticmethod
     def _cacheFeaturedSpeaker(websafeSpeakerKey, websafeConferenceKey):
+        '''
+        Checks if the given speaker is giving more than one session in the
+        given conference. If so, save it's announcement to the memcache as the
+        conference featured speaker.
+
+        NOTE: Tried iterating through the conference sessions instead, as
+        suggested in the last review. However, if I were to follow this
+        approach, for every conference session I would have to query it's
+        speaker in order to compare it with the given speaker. For that reason,
+        I chose to keep things as they are.
+        '''
         # Get the speaker by its websafeKey
         speaker = ndb.Key(urlsafe=websafeSpeakerKey).get()
         # initialize the counter and the list which will hold the name of the
@@ -379,7 +390,10 @@ class ConferenceApi(remote.Service):
 
     def _createSessionObject(self, request):
         """Creates a new session object"""
-        user = self._getProfileFromUser()
+        user = endpoints.get_current_user()
+        if not user:
+            raise endpoints.UnauthorizedException('Authorization required')
+
         user_id = getUserId(user)
         c_key = ndb.Key(urlsafe=request.websafeConferenceKey)
         conf = c_key.get()
@@ -473,7 +487,10 @@ class ConferenceApi(remote.Service):
 
 
     def _updateSessionObject(self, request):
-        user = self._getProfileFromUser()
+        user = endpoints.get_current_user()
+        if not user:
+            raise endpoints.UnauthorizedException('Authorization required')
+
         user_id = getUserId(user)
 
         # copy SessionForm/ProtoRPC Message into dict
@@ -631,25 +648,30 @@ class ConferenceApi(remote.Service):
 
         # The objective below was to apply at least one inequality filter using
         # a ndb filter node, removing it from the inequality filters list
-        # (which will be applied in memory afterward). The reasoning behind
+        # (which will be applied in memory afterwards). The reasoning behind
         # this is that ndb filter nodes are probably more efficient than
         # recreating the lists over and over. However, the idea was abandonned
         # because filtering by datetime.time() and datetime.date() apparently
-        # is not supported (BadValueError). For now, we just apply all
+        # is not supported (raises a BadValueError). For now, we just apply all
         # inequality filters with self._doInequalityFilter method. It shouldn't
-        # be as efficient, but at least it works..
-        # Also, this can be further improved, as the datastore limitation 
-        # relates to inequality filters on different properties. The method
-        # used before herein simply checked for multiple inequality filters,
-        # with disregard of the property it is applied to.
+        # be as efficient, but at least it works.. This is a minor drawback and
+        # can be fixed by detecting the filter to be applied (if a
+        # datetime.time or datetime.date filter, simply ignore it and let it be
+        # applied by the _doInequalityFilter). Furthermore, this method can be
+        # further improved, considering that the DataStore limitation relates
+        # to inequality filters on different properties. Previously, we were
+        # simply checking for multiple inequality filters, with disregard of
+        # the property it was applied to.
         '''
         if len(inequality_filters) > 0:
             f = inequality_filters.pop()
             if f['field'] == 'date':
                 f['value'] = datetime.strptime(f['value'][:10], "%Y-%m-%d").\
                         date()
-            #elif f['field'] == 'startTime':
-            #    f['value'] = datetime.strptime(f['value'], "%H:%M:%S").time()
+            elif f['field'] == 'startTime':
+                f['value'] = datetime.strptime(f['value'], "%H:%M").time()
+            q = q.order(ndb.GenericProperty(f['field']))
+            q = q.order(Session.name)
             query = ndb.query.FilterNode(f['field'], f['operator'], f['value'])
             q = q.filter(query)
         '''
@@ -815,7 +837,9 @@ class ConferenceApi(remote.Service):
     def _createConferenceObject(self, request):
         """Create Conference object"""
         # preload necessary data items
-        user = self._getProfileFromUser()
+        user = endpoints.get_current_user()
+        if not user:
+            raise endpoints.UnauthorizedException('Authorization required')
         user_id = getUserId(user)
 
         if not request.name:
@@ -874,7 +898,9 @@ class ConferenceApi(remote.Service):
 
     @ndb.transactional()
     def _updateConferenceObject(self, request):
-        user = self._getProfileFromUser()
+        user = endpoints.get_current_user()
+        if not user:
+            raise endpoints.UnauthorizedException('Authorization required')
         user_id = getUserId(user)
 
         # copy ConferenceForm/ProtoRPC Message into dict
@@ -952,7 +978,9 @@ class ConferenceApi(remote.Service):
     def getConferencesCreated(self, request):
         """Return conferences created by user."""
         # make sure user is authed
-        user = _self.getProfileFromUser()
+        user = endpoints.get_current_user()
+        if not user:
+            raise endpoints.UnauthorizedException('Authorization required')
         user_id = getUserId(user)
 
         # create ancestor query for all key matches for this user
